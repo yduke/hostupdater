@@ -36,11 +36,20 @@ jobs:
         shell: bash
         run: bash ./build.sh "${{ matrix.build_arg }}"
 
+      - name: Collect package
+        shell: bash
+        run: |
+          set -euo pipefail
+          format="${{ matrix.format }}"
+          mkdir -p artifacts
+          find output -type f -name "hostupdater*.${format}" -exec cp -f {} artifacts/ \;
+          test -n "$(find artifacts -maxdepth 1 -type f -print -quit)"
+
       - name: Upload ${{ matrix.format }} artifact
         uses: actions/upload-artifact@v7
         with:
           name: hostupdater-${{ matrix.format }}
-          path: output/*.${{ matrix.format }}
+          path: artifacts/hostupdater*.${{ matrix.format }}
           if-no-files-found: error
           retention-days: 7
 

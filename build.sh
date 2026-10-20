@@ -97,9 +97,19 @@ docker build \
 echo ""
 echo "Extracting packages from build container..."
 
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
 CONTAINER_ID=$(docker create "${IMAGE_TAG}")
-docker cp "${CONTAINER_ID}:/build/sdk/bin/." "${OUTPUT_DIR}"
+docker cp "${CONTAINER_ID}:/build/sdk/bin/." "${TMP_DIR}/"
 docker rm "${CONTAINER_ID}" > /dev/null
+
+if ! find "${TMP_DIR}" -type f -name "hostupdater*.${FORMAT}" -print -quit | grep -q .; then
+    echo "No .${FORMAT} package was produced." >&2
+    exit 1
+fi
+
+find "${TMP_DIR}" -type f -name "hostupdater*.${FORMAT}" -exec cp -f {} "${OUTPUT_DIR}/" \;
 
 echo ""
 echo "============================================"
@@ -120,7 +130,7 @@ echo ""
 
 if [ "${FORMAT}" = "apk" ]; then
     echo "To install on OpenWrt SNAPSHOT (25.12+):"
-    echo "  apk add output/hostupdater_*.apk"
+    echo "  apk add output/hostupdater*.apk"
 else
     echo "To install on OpenWrt 24.10:"
     echo "  opkg install output/hostupdater_*.ipk"
