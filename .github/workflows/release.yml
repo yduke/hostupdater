@@ -1,0 +1,104 @@
+name: Release packages
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hostupdater-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.format }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - format: ipk
+            build_arg: ipk
+          - format: apk
+            build_arg: apk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build ${{ matrix.format }}
+        shell: bash
+        run: bash ./build.sh "${{ matrix.build_arg }}"
+
+      - name: Upload ${{ matrix.format }} artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: hostupdater-${{ matrix.format }}
+          path: output/*.${{ matrix.format }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^PKG_VERSION:=//p' Makefile | head -n 1 | tr -d '[:space:]')"
+          release="$(sed -n 's/^PKG_RELEASE:=//p' Makefile | head -n 1 | tr -d '[:space:]')"
+
+          if [ -z "$version" ] || [ -z "$release" ]; then
+            echo "Unable to read PKG_VERSION or PKG_RELEASE from Makefile" >&2
+            exit 1
+          fi
+
+          tag="v${version}-r${release}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "$tag" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Makefile version ${tag}" >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "name=Host Updater ${version}-r${release}" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: hostupdater-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd dist
+          find . -maxdepth 1 -type f ! -name sha256sums.txt -printf '%f\0' | sort -z | xargs -0 sha256sum > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            dist/*.ipk
+            dist/*.apk
+            dist/sha256sums.txt
+          generate_release_notes: true
+          overwrite_files: true
+          fail_on_unmatched_files: true

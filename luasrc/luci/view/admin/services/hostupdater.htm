@@ -9,51 +9,88 @@
 
 <div id="hostupdater-container" class="hu-wrap">
 	<div class="cbi-section hu-card">
+		<div class="hu-card-head">
+			<h3><%:Status%></h3>
+			<button class="btn cbi-button cbi-button-reload" onclick="hostupdater.refresh()"><%:Refresh%></button>
+		</div>
+		<div class="hu-status-grid">
+			<div class="hu-stat">
+				<span class="hu-stat-label"><%:Service%></span>
+				<span id="st-service" class="hu-badge hu-badge-off"><%:Loading...%></span>
+			</div>
+			<div class="hu-stat">
+				<span class="hu-stat-label"><%:Last update%></span>
+				<span id="st-last" class="hu-stat-value">-</span>
+			</div>
+			<div class="hu-stat">
+				<span class="hu-stat-label"><%:Generated entries%></span>
+				<span id="st-lines" class="hu-stat-value">0</span>
+			</div>
+			<div class="hu-stat">
+				<span class="hu-stat-label"><%:dnsmasq addnhosts%></span>
+				<span id="st-addn" class="hu-badge hu-badge-off">-</span>
+			</div>
+			<div class="hu-stat hu-stat-wide">
+				<span class="hu-stat-label"><%:Generated file%></span>
+				<span id="st-target" class="hu-stat-value hu-mono">-</span>
+			</div>
+		</div>
+		<div id="state-banner" class="hu-state" style="display:none">
+			<span class="hu-spinner"></span>
+			<span id="state-text"></span>
+		</div>
+	</div>
+
+	<div class="cbi-section hu-card">
 		<h3><%:Basic Settings%></h3>
 		<div class="cbi-section-descr"><%:Manage multiple hosts subscription sources with scheduled and manual fetching%></div>
-		<div class="hu-grid2">
-			<div class="cbi-value">
-				<label class="cbi-value-title"><%:Enable Service%></label>
-				<div class="cbi-value-field">
+		<div class="hu-settings-grid">
+			<div class="hu-field">
+				<span class="hu-field-label"><%:Enable Service%></span>
+				<label class="hu-check" for="enabled">
 					<input type="checkbox" id="enabled" />
-					<label for="enabled"><%:Enable automatic update service%></label>
-				</div>
+					<span><%:Enable automatic update service%></span>
+				</label>
 			</div>
-			<div class="cbi-value">
-				<label class="cbi-value-title"><%:Update Interval%></label>
-				<div class="cbi-value-field">
-					<select id="interval">
-						<option value="1" selected><%:1 hour%></option>
-						<option value="2"><%:2 hours%></option>
-						<option value="3"><%:3 hours%></option>
-						<option value="6"><%:6 hours%></option>
-						<option value="12"><%:12 hours%></option>
-						<option value="24"><%:24 hours%></option>
-					</select>
-				</div>
+			<div class="hu-field">
+				<label class="hu-field-label" for="interval"><%:Update Interval%></label>
+				<select id="interval">
+					<option value="1"><%:1 hour%></option>
+					<option value="2"><%:2 hours%></option>
+					<option value="3"><%:3 hours%></option>
+					<option value="6"><%:6 hours%></option>
+					<option value="12"><%:12 hours%></option>
+					<option value="24"><%:24 hours%></option>
+				</select>
+			</div>
+			<div class="hu-field hu-field-wide">
+				<label class="hu-field-label" for="target"><%:Generated file path%></label>
+				<input type="text" id="target" class="hu-mono" placeholder="/etc/hostupdater/hosts" />
+				<div class="hu-hint"><%:The file is registered automatically in dnsmasq "Additional hosts files"; /etc/hosts is never modified.%></div>
 			</div>
 		</div>
 		<div class="hu-actions">
-			<button class="btn cbi-button-save" onclick="hostupdater.saveConfig()"><%:Save Configuration%></button>
+			<button class="btn cbi-button cbi-button-save" onclick="hostupdater.saveConfig()"><%:Save Configuration%></button>
 		</div>
 	</div>
 
 	<div class="cbi-section hu-card">
 		<h3><%:Subscription Sources Management%></h3>
 		<div class="cbi-section-descr"><%:Add, delete, enable, disable subscription sources, support manual update for individual sources%></div>
-		<div class="hu-grid2 hu-gap">
-			<div class="cbi-value">
-				<label class="cbi-value-title"><%:Source Name%></label>
-				<div class="cbi-value-field"><input type="text" id="new-source-name" placeholder="<%:Name%>" /></div>
+		<div class="hu-source-form">
+			<div class="hu-source-field">
+				<label class="hu-field-label" for="new-source-name"><%:Source Name%></label>
+				<input type="text" id="new-source-name" placeholder="<%:Name%>" />
 			</div>
-			<div class="cbi-value">
-				<label class="cbi-value-title"><%:Source URL%></label>
-				<div class="cbi-value-field"><input type="text" id="new-source-url" placeholder="<%:URL%>" /></div>
+			<div class="hu-source-field">
+				<label class="hu-field-label" for="new-source-url"><%:Source URL%></label>
+				<input type="text" id="new-source-url" class="hu-mono" placeholder="https://example.com/hosts.txt" />
+			</div>
+			<div class="hu-source-submit">
+				<button class="btn cbi-button cbi-button-add" onclick="hostupdater.addSource()"><%:Add%></button>
 			</div>
 		</div>
-		<div class="hu-actions">
-			<button class="btn cbi-button-add" onclick="hostupdater.addSource()"><%:Add%></button>
-		</div>
+		<div class="hu-hint"><%:Sources are applied from top to bottom; the first occurrence of a domain wins.%></div>
 		<div class="hu-table-wrap">
 			<div id="sources-list"><%:Loading...%></div>
 		</div>
@@ -61,32 +98,34 @@
 
 	<div class="cbi-section hu-card">
 		<h3><%:Batch Operations%></h3>
-		<div class="hu-actions">
-			<button class="btn cbi-button-apply" onclick="hostupdater.updateAll()"><%:Update All%></button>
-			<button class="btn cbi-button-remove" onclick="hostupdater.performRestore()"><%:Restore Hosts%></button>
-			<!-- <button class="btn cbi-button-reload" onclick="hostupdater.updateStatus()"><%:Refresh Status%></button> -->
+		<div class="hu-actions hu-actions-left">
+			<button class="btn cbi-button cbi-button-apply" onclick="hostupdater.updateAll()"><%:Update All%></button>
+			<button class="btn cbi-button cbi-button-remove" onclick="hostupdater.performRestore()"><%:Stop and clean subscription%></button>
 		</div>
+		<div class="hu-hint"><%:Stop and clean removes the generated file and the dnsmasq addnhosts entry. /etc/hosts is left untouched.%></div>
 	</div>
 
 	<div class="cbi-section hu-card">
-		<h3><%:Current /etc/hosts Content%></h3>
-		<div class="hu-row">
-			<button class="btn cbi-button-reload" onclick="hostupdater.loadHosts()"><%:Refresh%></button>
+		<div class="hu-card-head">
+			<h3><%:Current generated hosts content%></h3>
+			<button class="btn cbi-button cbi-button-reload" onclick="hostupdater.loadTarget()"><%:Refresh%></button>
 		</div>
-		<pre id="hosts-display" class="log-content" style="min-height:220px"><%:Click "Refresh" button to load current /etc/hosts%></pre>
+		<pre id="target-display" class="log-content"><%:Click "Refresh" button to load the generated file%></pre>
 	</div>
 
 	<div class="cbi-section hu-card">
-		<h3><%:Log Viewer%></h3>
-		<div class="hu-row">
-			<select id="log-lines">
-				<option value="50">50</option>
-				<option value="100" selected>100</option>
-				<option value="200">200</option>
-				<option value="500">500</option>
-			</select>
-			<button class="btn cbi-button-reload" onclick="hostupdater.viewLog()"><%:View Log%></button>
-			<button class="btn cbi-button-remove" onclick="hostupdater.clearLog()"><%:Clear Log%></button>
+		<div class="hu-card-head">
+			<h3><%:Log Viewer%></h3>
+			<div class="hu-row">
+				<select id="log-lines">
+					<option value="50">50</option>
+					<option value="100" selected>100</option>
+					<option value="200">200</option>
+					<option value="500">500</option>
+				</select>
+				<button class="btn cbi-button cbi-button-reload" onclick="hostupdater.viewLog()"><%:View Log%></button>
+				<button class="btn cbi-button cbi-button-remove" onclick="hostupdater.clearLog()"><%:Clear Log%></button>
+			</div>
 		</div>
 		<pre id="log-display" class="log-content"><%:Click "View Log" button to display logs%></pre>
 	</div>
@@ -95,54 +134,396 @@
 <script type="text/javascript">
 'use strict';
 (function(){
-	function esc(s){return (s||'').replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));}
-	var hostupdater = {
-		init(){ this.loadConfig(); this.loadSources(); this.loadHosts(); },
-		msg(t,m,ok){ var c=document.getElementById('hostupdater-container'); var el=document.createElement('div'); el.className='alert '+(ok?'alert-success':'alert-danger'); el.innerHTML='<strong>'+esc(t)+'</strong>'+(m?('<br>'+esc(m)):''); c.insertAdjacentElement('afterbegin',el); setTimeout(()=>{el.remove();},2500); },
-		loadConfig(){ fetch('/cgi-bin/luci/admin/services/hostupdater/config').then(r=>r.json()).then(d=>{ document.getElementById('enabled').checked=!!d.enabled; if(d.interval) document.getElementById('interval').value=d.interval; }).catch(()=>{}); },
-		saveConfig(){ const p={enabled:document.getElementById('enabled').checked, interval:document.getElementById('interval').value}; fetch('/cgi-bin/luci/admin/services/hostupdater/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).then(r=>r.json()).then(d=>{ this.msg('<%:Save Configuration%>',d.success?'<%:Success%>':'<%:Failed%>',d.success); }).catch(e=>this.msg('<%:Save Configuration Failed%>',e.message,false)); },
-		loadSources(){ fetch('/cgi-bin/luci/admin/services/hostupdater/sources').then(r=>r.json()).then(d=>this.renderSources(d||[])).catch(()=>this.renderSources([])); },
-		renderSources(list){ const wrap=document.getElementById('sources-list'); if(!list.length){ wrap.innerHTML='<p><%:No subscription sources%></p>'; return;} let html='<table class="table hu-table"><thead><tr><th><%:Name%></th><th><%:URL%></th><th><%:Status%></th><th class="hu-ops"><%:Operations%></th></tr></thead><tbody>'; list.forEach(s=>{ html+= '<tr>'+'<td>'+esc(s.name)+'</td>'+'<td class="hu-url">'+esc(s.url)+'</td>'+'<td>'+(s.enabled?'<span class="status-enabled"><%:Enabled%></span>':'<span class="status-disabled"><%:Disabled%></span>')+'</td>'+'<td class="hu-ops">'+'<button class="btn btn-mini" onclick="hostupdater.toggle(\''+encodeURIComponent(s.name)+'\')">'+(s.enabled?'<%:Disable%>':'<%:Enable%>')+'</button> '+'<button class="btn btn-mini" onclick="hostupdater.updateOne(\''+encodeURIComponent(s.name)+'\')"><%:Update%></button> '+'<button class="btn btn-mini btn-danger" onclick="hostupdater.remove(\''+encodeURIComponent(s.name)+'\')"><%:Delete%></button>'+'</td>'+'</tr>'; }); html+='</tbody></table>'; wrap.innerHTML=html; },
-		addSource(){ const name=document.getElementById('new-source-name').value.trim(); const url=document.getElementById('new-source-url').value.trim(); if(!name||!url) return this.msg('<%:Add Failed%>','<%:Please fill in name and URL%>',false); const p={name,url,enabled:true}; fetch('/cgi-bin/luci/admin/services/hostupdater/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).then(r=>r.json()).then(d=>{ this.msg('<%:Add Subscription Source%>',d.success?'<%:Success%>':'<%:Failed%>',d.success); if(d.success){ this.loadSources(); document.getElementById('new-source-name').value=''; document.getElementById('new-source-url').value=''; }}).catch(e=>this.msg('<%:Add Failed%>',e.message,false)); },
-		toggle(nameEnc){ const name=decodeURIComponent(nameEnc); const form=new URLSearchParams(); form.set('name',name); fetch('/cgi-bin/luci/admin/services/hostupdater/source/toggle',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:form.toString()}).then(r=>r.json()).then(d=>{ this.msg('<%:Toggle Status%>',d.success?'<%:Success%>':'<%:Failed%>',d.success); if(d.success) this.loadSources(); }).catch(e=>this.msg('<%:Toggle Failed%>',e.message,false)); },
-		updateOne(nameEnc){ const name=decodeURIComponent(nameEnc); fetch('/cgi-bin/luci/admin/services/hostupdater/source/update?name='+encodeURIComponent(name)).then(r=>r.text()).then(()=>{ this.msg('<%:Single Source Update%>','<%:Completed%>',true); this.updateStatus(); }).catch(e=>this.msg('<%:Single Source Update Failed%>',e.message,false)); },
-		remove(nameEnc){ const name=decodeURIComponent(nameEnc); if(!confirm('<%:Confirm delete subscription source%>: '+name+' ?')) return; const form=new URLSearchParams(); form.set('name',name); fetch('/cgi-bin/luci/admin/services/hostupdater/source/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:form.toString()}).then(r=>r.json()).then(d=>{ this.msg('<%:Delete Subscription Source%>',d.success?'<%:Success%>':'<%:Failed%>',d.success); if(d.success) this.loadSources(); }).catch(e=>this.msg('<%:Delete Failed%>',e.message,false)); },
-		updateAll(){ fetch('/cgi-bin/luci/admin/services/hostupdater/update').then(r=>r.text()).then(()=>{ this.msg('<%:Update All%>','<%:Completed%>',true); this.updateStatus(); }).catch(e=>this.msg('<%:Update Failed%>',e.message,false)); },
-		performRestore(){ if(!confirm('<%:Confirm restore /etc/hosts to original backup%>?')) return; fetch('/cgi-bin/luci/admin/services/hostupdater/restore').then(r=>r.text()).then(()=>{ this.msg('<%:Restore Completed%>','',true); this.updateStatus(); }).catch(e=>this.msg('<%:Restore Failed%>',e.message,false)); },
-		updateStatus(){ /* 兼容留空 */ },
-		loadHosts(){ fetch('/cgi-bin/luci/admin/services/hostupdater/hosts').then(r=>r.text()).then(t=>{ document.getElementById('hosts-display').textContent=t; }).catch(e=>this.msg('<%:Load hosts failed%>',e.message,false)); },
-		viewLog(){ const n=document.getElementById('log-lines').value; fetch('/cgi-bin/luci/admin/services/hostupdater/log?lines='+encodeURIComponent(n)).then(r=>r.text()).then(t=>{ document.getElementById('log-display').textContent=t; }).catch(e=>this.msg('<%:View log failed%>',e.message,false)); },
-		clearLog(){ if(!confirm('<%:Confirm clear log%>?')) return; const form=new URLSearchParams(); form.set('op','delete'); fetch('/cgi-bin/luci/admin/services/hostupdater/log',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:form.toString()}).then(r=>r.json()).then(d=>{ this.msg('<%:Clear Log%>',d.success?'<%:Success%>':'<%:Failed%>',d.success); if(d.success) document.getElementById('log-display').textContent=''; }).catch(e=>this.msg('<%:Clear log failed%>',e.message,false)); }
+	var BASE = '/cgi-bin/luci/admin/services/hostupdater';
+	var pollTimer = null;
+	var currentSources = [];
+	var lastStatus = {};
+	var lastState = {};
+
+	function $(id){ return document.getElementById(id); }
+	function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(m){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]; }); }
+	function fmtTime(epoch){
+		if (!epoch) return '-';
+		var d = new Date(Number(epoch) * 1000);
+		if (isNaN(d.getTime())) return '-';
+		return d.toLocaleString();
+	}
+	function phaseText(s){
+		var p = (s && s.phase) || '';
+		var cur = (s && s.current) ? (' (' + s.current + ')') : '';
+		var map = {
+			'starting': '<%:Starting%>',
+			'downloading': '<%:Downloading%>',
+			'merging': '<%:Merging%>',
+			'writing': '<%:Writing%>',
+			'done': '<%:Completed%>',
+			'restored': '<%:Cleaned%>',
+			'no-sources': '<%:No enabled sources%>',
+			'error': '<%:Failed%>'
+		};
+		return (map[p] || p || '<%:Idle%>') + cur;
+	}
+
+	function jsonGet(path){
+		return fetch(BASE + path, {cache:'no-store', headers:{'Accept':'application/json'}}).then(function(r){
+			if (!r.ok) throw new Error('HTTP ' + r.status);
+			return r.json();
+		});
+	}
+	function textGet(path){
+		return fetch(BASE + path, {cache:'no-store'}).then(function(r){
+			if (!r.ok) throw new Error('HTTP ' + r.status);
+			return r.text();
+		});
+	}
+	function jsonPost(path, data){
+		return fetch(BASE + path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data || {})}).then(function(r){
+			var ct = r.headers.get('Content-Type') || '';
+			if (ct.indexOf('json') >= 0) return r.json();
+			return r.text().then(function(t){ return {success:true, raw:t}; });
+		});
+	}
+	function formPost(path, data){
+		var body = new URLSearchParams();
+		Object.keys(data || {}).forEach(function(k){ body.set(k, data[k]); });
+		return fetch(BASE + path, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body.toString()}).then(function(r){
+			var ct = r.headers.get('Content-Type') || '';
+			if (ct.indexOf('json') >= 0) return r.json();
+			return r.text().then(function(t){ return {success:true, raw:t}; });
+		});
+	}
+
+	function toast(text, ok){
+		var c = $('hostupdater-container');
+		var el = document.createElement('div');
+		el.className = 'hu-toast ' + (ok ? 'hu-toast-ok' : 'hu-toast-err');
+		el.textContent = text;
+		c.insertBefore(el, c.firstChild);
+		setTimeout(function(){ el.remove(); }, 3000);
+	}
+
+	function setBusy(busy){
+		document.querySelectorAll('#hostupdater-container button').forEach(function(b){
+			if (b.getAttribute('data-keep') === '1') return;
+			b.disabled = busy;
+		});
+	}
+
+	function showState(s){
+		lastState = s || {};
+		var banner = $('state-banner');
+		var text = $('state-text');
+		if (s && s.running) {
+			banner.style.display = '';
+			text.textContent = phaseText(s);
+		} else if (s && s.phase && s.phase !== 'done' && s.phase !== 'restored') {
+			banner.style.display = '';
+			text.textContent = phaseText(s);
+		} else {
+			banner.style.display = 'none';
+		}
+	}
+
+	function loadConfig(){
+		return jsonGet('/config').then(function(d){
+			$('enabled').checked = !!d.enabled;
+			if (d.interval) $('interval').value = d.interval;
+			if (d.target) $('target').value = d.target;
+		}).catch(function(){});
+	}
+
+	function renderStatus(st){
+		lastStatus = st || {};
+		var enabled = !!st.enabled;
+		var service = !!st.service;
+		var running = !!st.running;
+
+		var svc = $('st-service');
+		if (!enabled) {
+			svc.className = 'hu-badge hu-badge-off';
+			svc.textContent = '<%:Disabled%>';
+		} else if (service) {
+			svc.className = 'hu-badge hu-badge-ok';
+			svc.textContent = '<%:Running%>';
+		} else {
+			svc.className = 'hu-badge hu-badge-warn';
+			svc.textContent = '<%:Not running%>';
+		}
+
+		var last = $('st-last');
+		last.textContent = fmtTime(st.last_update);
+		if (running && st.running) last.textContent = '<%:Updating%>';
+
+		$('st-lines').textContent = st.lines == null ? '0' : st.lines;
+
+		var addn = $('st-addn');
+		if (st.addnhosts) {
+			addn.className = 'hu-badge hu-badge-ok';
+			addn.textContent = '<%:Registered%>';
+		} else {
+			addn.className = 'hu-badge hu-badge-warn';
+			addn.textContent = '<%:Not registered%>';
+		}
+
+		$('st-target').textContent = (st.target || '-') + (st.target_exists ? '' : '  (<%:missing%>)');
+
+		showState(lastState);
+	}
+
+	function stateBadge(status){
+		if (status === 'ok') return '<span class="hu-badge hu-badge-ok"><%:Updated%></span>';
+		if (status === 'stale') return '<span class="hu-badge hu-badge-warn"><%:Cached%></span>';
+		if (status === 'fail') return '<span class="hu-badge hu-badge-err"><%:Failed%></span>';
+		return '';
+	}
+
+	function renderSources(list){
+		currentSources = list || [];
+		var wrap = $('sources-list');
+		if (!currentSources.length) {
+			wrap.innerHTML = '<p class="hu-empty"><%:No subscription sources%></p>';
+			return;
+		}
+
+		var byName = {};
+		(lastStatus.sources || []).forEach(function(s){ byName[s.name] = s; });
+		var runState = {};
+		(lastState.sources || []).forEach(function(s){ runState[s.name] = s; });
+
+		var html = '<table class="table hu-table"><thead><tr>' +
+			'<th><%:Name%></th><th><%:URL%></th><th><%:Status%></th><th><%:Cache%></th><th class="hu-ops"><%:Operations%></th>' +
+			'</tr></thead><tbody>';
+
+		currentSources.forEach(function(s){
+			var info = byName[s.name] || {};
+			var rs = runState[s.name] || null;
+			var statusHtml = s.enabled
+				? '<span class="hu-badge hu-badge-ok"><%:Enabled%></span>'
+				: '<span class="hu-badge hu-badge-off"><%:Disabled%></span>';
+			if (rs) statusHtml += ' ' + stateBadge(rs.status);
+
+			var cacheHtml = info.cached
+				? ('<span class="hu-mono">' + esc(info.lines) + '</span> <%:entries%><br><span class="hu-hint">' + fmtTime(info.cached_at) + '</span>')
+				: ('<span class="hu-hint"><%:No cache%></span>');
+
+			html += '<tr>' +
+				'<td class="hu-name">' + esc(s.name) + '</td>' +
+				'<td class="hu-url" title="' + esc(s.url) + '">' + esc(s.url) + '</td>' +
+				'<td>' + statusHtml + '</td>' +
+				'<td>' + cacheHtml + '</td>' +
+				'<td class="hu-ops">' +
+					'<button class="btn btn-mini" onclick="hostupdater.toggle(\'' + encodeURIComponent(s.name) + '\')">' +
+						(s.enabled ? '<%:Disable%>' : '<%:Enable%>') + '</button> ' +
+					'<button class="btn btn-mini" onclick="hostupdater.updateOne(\'' + encodeURIComponent(s.name) + '\')"><%:Update%></button> ' +
+					'<button class="btn btn-mini hu-btn-danger" onclick="hostupdater.remove(\'' + encodeURIComponent(s.name) + '\')"><%:Delete%></button>' +
+				'</td>' +
+			'</tr>';
+		});
+		html += '</tbody></table>';
+		wrap.innerHTML = html;
+	}
+
+	function loadSources(){
+		return jsonGet('/sources').then(renderSources).catch(function(){ renderSources([]); });
+	}
+
+	function loadStatus(){
+		return jsonGet('/status').then(function(st){
+			renderStatus(st);
+			renderSources(currentSources);
+		}).catch(function(){});
+	}
+
+	function startPolling(){
+		stopPolling();
+		setBusy(true);
+		var misses = 0;
+		var ticks = 0;
+		function finish(s){
+			stopPolling();
+			setBusy(false);
+			loadStatus();
+			loadSources();
+			loadTarget();
+			viewLog();
+			if (s && s.phase === 'done') toast('<%:Update completed%>', true);
+			if (s && s.phase === 'error') toast('<%:Update failed, check the log%>', false);
+			if (s && s.phase === 'restored') toast('<%:Cleaned%>', true);
+		}
+		function check(){
+			ticks++;
+			if (ticks > 800) { finish(lastState); return; }
+			jsonGet('/state').then(function(s){
+				showState(s);
+				if (s && s.running) { misses = 0; return; }
+				misses++;
+				if (misses >= 2) finish(s);
+			}).catch(function(){ stopPolling(); setBusy(false); });
+		}
+		setTimeout(check, 400);
+		pollTimer = setInterval(check, 900);
+	}
+
+	function stopPolling(){
+		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+	}
+
+	var api = {
+		init: function(){ this.refresh(); },
+		refresh: function(){ loadConfig(); loadStatus(); loadSources(); },
+		saveConfig: function(){
+			var p = {
+				enabled: $('enabled').checked,
+				interval: $('interval').value,
+				target: $('target').value
+			};
+			jsonPost('/config', p).then(function(d){
+				if (d && d.success) { toast('<%:Configuration saved%>', true); setTimeout(loadStatus, 800); }
+				else toast(d && d.error ? d.error : '<%:Save Configuration Failed%>', false);
+			}).catch(function(e){ toast(e.message, false); });
+		},
+		addSource: function(){
+			var name = $('new-source-name').value.trim();
+			var url = $('new-source-url').value.trim();
+			if (!name || !url) { toast('<%:Please fill in name and URL%>', false); return; }
+			jsonPost('/sources', {name:name, url:url, enabled:true}).then(function(d){
+				if (d && d.success) {
+					$('new-source-name').value = '';
+					$('new-source-url').value = '';
+					toast('<%:Source added%>', true);
+					loadSources();
+				} else {
+					toast(d && d.error ? d.error : '<%:Add Failed%>', false);
+				}
+			}).catch(function(e){ toast(e.message, false); });
+		},
+		toggle: function(nameEnc){
+			formPost('/sources/toggle', {name: decodeURIComponent(nameEnc)}).then(function(d){
+				if (d && d.success) loadSources();
+				else toast(d && d.error ? d.error : '<%:Toggle Failed%>', false);
+			}).catch(function(e){ toast(e.message, false); });
+		},
+		updateOne: function(nameEnc){
+			formPost('/sources/update', {name: decodeURIComponent(nameEnc)}).then(function(d){
+				if (d && d.started) startPolling();
+				else toast(d && d.error ? d.error : '<%:Single Source Update Failed%>', false);
+			}).catch(function(e){ toast(e.message, false); });
+		},
+		remove: function(nameEnc){
+			var name = decodeURIComponent(nameEnc);
+			if (!confirm('<%:Confirm delete subscription source%>: ' + name + ' ?')) return;
+			formPost('/sources/delete', {name:name}).then(function(d){
+				if (d && d.success) { toast('<%:Deleted%>', true); loadSources(); }
+				else toast(d && d.error ? d.error : '<%:Delete Failed%>', false);
+			}).catch(function(e){ toast(e.message, false); });
+		},
+		updateAll: function(){
+			jsonPost('/update', {}).then(function(d){
+				if (d) startPolling();
+			}).catch(function(e){ toast(e.message, false); });
+		},
+		performRestore: function(){
+			if (!confirm('<%:Confirm stop and clean the generated hosts file?%>')) return;
+			jsonPost('/restore', {}).then(function(d){ if (d) startPolling(); })
+				.catch(function(e){ toast(e.message, false); });
+		},
+		loadTarget: function(){
+			textGet('/target').then(function(t){ $('target-display').textContent = t; })
+				.catch(function(e){ toast(e.message, false); });
+		},
+		viewLog: function(){
+			var n = $('log-lines').value;
+			textGet('/log?lines=' + encodeURIComponent(n)).then(function(t){ $('log-display').textContent = t; })
+				.catch(function(e){ toast(e.message, false); });
+		},
+		clearLog: function(){
+			if (!confirm('<%:Confirm clear log%>?')) return;
+			formPost('/log', {op:'delete'}).then(function(d){
+				if (d && d.success) { $('log-display').textContent = ''; toast('<%:Log cleared%>', true); }
+			}).catch(function(e){ toast(e.message, false); });
+		}
 	};
-	window.hostupdater=hostupdater;
-	document.addEventListener('DOMContentLoaded',()=>hostupdater.init());
+
+	window.hostupdater = api;
+	document.addEventListener('DOMContentLoaded', function(){ api.init(); });
 })();
 </script>
 
 <style>
 .hu-wrap { display:flex; flex-direction:column; gap:16px; }
-.hu-card { background:#fff; border:1px solid #ddd; border-radius:6px; padding:12px 14px; }
-.hu-grid2 { display:flex; flex-direction: column; gap:12px 18px; align-items:center; }
-.hu-gap { margin-top:8px; }
-.hu-actions { margin-top:10px; display:flex; gap:8px; justify-content: center;}
-.hu-table-wrap { margin-top:10px; overflow:auto; }
-.hu-table { text-align: center; width:100%; border-collapse:collapse; }
-.hu-table th, .hu-table td { padding:8px 10px; border-bottom:1px solid #e6e6e6; vertical-align:middle; }
-.hu-table thead th { background:#f5f7fa; font-weight:600; color:#333; }
+.hu-card {
+	background: var(--surface-color, #fff);
+	border: 1px solid var(--border-color, #dee2e6);
+	border-radius: var(--radius-card, 6px);
+	padding: 14px 16px;
+	color: var(--text-color, inherit);
+}
+.hu-card h3 { margin:0 0 6px; color: var(--text-color-high, inherit); }
+.hu-card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+.hu-card-head h3 { margin:0; }
+.hu-settings-grid { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:16px 18px; align-items:start; }
+.hu-field { min-width:0; }
+.hu-field-wide { grid-column:1 / -1; }
+.hu-field-label { display:block; margin:0 0 6px; font-weight:600; color:var(--text-color-high, inherit); line-height:1.4; }
+.hu-settings-grid input[type="text"], .hu-settings-grid select, .hu-source-field input[type="text"] { width:100%; box-sizing:border-box; }
+.hu-check {
+	display:flex; align-items:center; gap:8px; width:100%; min-height:42px;
+	box-sizing:border-box; padding:7px 11px; cursor:pointer;
+	border:1px solid var(--border-color, #dee2e6); border-radius:6px;
+	background:var(--surface-muted, #f6f9fc); color:var(--text-color, inherit);
+	font-weight:400; line-height:1.4;
+}
+.hu-check input[type="checkbox"] { flex:0 0 auto; width:16px; height:16px; margin:0; accent-color:var(--primary, #5e72e4); }
+.hu-check span { min-width:0; }
+.hu-check:focus-within { border-color:var(--primary, #5e72e4); box-shadow:0 0 0 2px rgba(94,114,228,.18); }
+.hu-source-form { display:flex; align-items:flex-end; gap:12px; }
+.hu-source-field { flex:5 1 0; min-width:0; }
+.hu-source-submit { flex:2 1 0; min-width:120px; }
+.hu-source-field input[type="text"], .hu-source-submit .btn { min-height:36px; box-sizing:border-box; }
+.hu-source-submit .btn { display:flex; align-items:center; justify-content:center; width:100%; }
+.hu-actions { margin-top:12px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+.hu-actions-left { justify-content:flex-start; }
+.hu-row { display:flex; align-items:center; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+.hu-table-wrap { margin-top:12px; overflow:auto; }
+.hu-table { width:100%; border-collapse:collapse; text-align:center; }
+.hu-table th, .hu-table td { padding:8px 10px; border-bottom:1px solid var(--separator-color, #e9ecef); vertical-align:middle; }
+.hu-table thead th {
+	background:var(--surface-contrast, #e9ecef);
+	color:var(--text-color-high, #1f2937);
+	border-bottom:1px solid var(--border-strong, #cbd5e1);
+	font-weight:700;
+}
 .hu-ops { white-space:nowrap; text-align:right; }
-.hu-url { max-width:520px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.hu-row { display:flex; align-items:center; gap:10px;justify-content: flex-end; }
-.hu-status { background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px; }
-.hu-status-list { list-style:none; padding:0; margin:0; display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:6px 12px; }
-.status-enabled { color:#15803d; font-weight:600; }
-.status-disabled { color:#b91c1c; font-weight:600; }
-.log-content { margin:10px; background:#0b1020; color:#e5e7eb; border:1px solid #111827; border-radius:6px; padding:12px; min-height:140px; max-height:420px; overflow:auto; }
-.btn-mini { padding:2px 6px; font-size:11px; margin-right:6px; }
-.btn-danger { background:#dc3545; border:#dc3545; color:#fff; }
-.alert { padding:10px; margin:10px 0; border-radius:4px; }
-.alert-success { background:#d4edda; border:1px solid #c3e6cb; color:#155724; }
-.alert-danger { background:#f8d7da; border:1px solid #f5c6cb; color:#721c24; }
-#new-source-name, #new-source-url { width:100%; box-sizing:border-box; }
+.hu-url { max-width:460px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.hu-name { font-weight:600; }
+.hu-hint { margin-top:8px; color: var(--text-color-low, #6c757d); font-size:12px; line-height:1.5; }
+.hu-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.hu-empty { color: var(--text-color-low, #6c757d); margin:8px 0; }
+.hu-status-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px 16px; }
+.hu-stat { display:flex; flex-direction:column; gap:4px; padding:8px 10px; border-radius:6px; background: var(--surface-muted, #f6f9fc); border:1px solid var(--border-muted, #e9ecef); }
+.hu-stat-wide { grid-column:1 / -1; }
+.hu-stat-label { font-size:12px; color: var(--text-color-low, #6c757d); }
+.hu-stat-value { font-weight:600; word-break:break-all; }
+.hu-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600; line-height:1.6; }
+.hu-badge-ok { color: var(--success, #15803d); background: rgba(21,128,61,.12); }
+.hu-badge-warn { color: var(--warning, #b45309); background: rgba(180,83,9,.12); }
+.hu-badge-err { color: var(--danger, #b91c1c); background: rgba(185,28,28,.12); }
+.hu-badge-off { color: var(--text-color-low, #6c757d); background: rgba(108,117,125,.12); }
+.hu-state { margin-top:12px; display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:6px; background: var(--surface-inset, #f4f5f7); border:1px solid var(--border-color, #dee2e6); }
+.hu-spinner { width:14px; height:14px; border:2px solid var(--border-color, #ccc); border-top-color: var(--primary, #5e72e4); border-radius:50%; animation:hu-spin .8s linear infinite; flex:none; }
+@keyframes hu-spin { to { transform:rotate(360deg); } }
+.log-content { margin:10px 0 0; background:#0b1020; color:#e5e7eb; border:1px solid var(--border-color, #111827); border-radius:6px; padding:12px; min-height:140px; max-height:420px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+.btn-mini { padding:2px 6px; font-size:12px; margin:2px 0; }
+.hu-btn-danger { color:#fff; background:#dc3545; border-color:#dc3545; }
+.hu-toast { margin:0 0 12px; padding:10px 12px; border-radius:6px; font-weight:600; }
+.hu-toast-ok { color: var(--success, #15803d); background: rgba(21,128,61,.12); border:1px solid rgba(21,128,61,.35); }
+.hu-toast-err { color: var(--danger, #b91c1c); background: rgba(185,28,28,.12); border:1px solid rgba(185,28,28,.35); }
+@media (max-width:767px) {
+	.hu-settings-grid { grid-template-columns:minmax(0, 1fr); }
+	.hu-field-wide { grid-column:auto; }
+	.hu-source-form { flex-direction:column; align-items:stretch; }
+	.hu-source-field, .hu-source-submit { flex:1 1 auto; width:100%; min-width:0; }
+}
 </style>
 
-<%+footer%> 
+<%+footer%>

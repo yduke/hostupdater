@@ -1,357 +1,829 @@
 #!/bin/sh
 
-# Host Updater Script
-# 管理多个hosts订阅源，支持定时抓取和手动抓取
+# Host Updater - manage hosts subscription sources for OpenWrt
 # Copyright (c) 2025 Gxxkx
+#
+# The generated file is registered in dnsmasq "addnhosts" and never replaces
+# /etc/hosts. Each source keeps a last-known-good cache so a failed download
+# can never silently remove working entries.
 
-CONFIG_FILE="/etc/config/hostupdater"
-SOURCES_FILE="/etc/hostupdater/sources.conf"
-HOSTS_FILE="/etc/hosts"
-BACKUP_DIR="/etc/hostupdater/backup"
-TEMP_DIR="/tmp/hostupdater"
-LOG_FILE="/var/log/hostupdater.log"
+CONFIG_FILE="${HOSTUPDATER_CONFIG:-/etc/config/hostupdater}"
+SOURCES_FILE="${HOSTUPDATER_SOURCES:-/etc/hostupdater/sources.conf}"
+BACKUP_DIR="${HOSTUPDATER_BACKUP:-/etc/hostupdater/backup}"
+CACHE_DIR="${HOSTUPDATER_CACHE:-/etc/hostupdater/cache}"
+HOSTS_FILE="${HOSTUPDATER_ETC_HOSTS:-/etc/hosts}"
+DEFAULT_TARGET="${HOSTUPDATER_DEFAULT_TARGET:-/etc/hostupdater/hosts}"
+TEMP_DIR="${HOSTUPDATER_TMP:-/tmp/hostupdater}"
+LOG_FILE="${HOSTUPDATER_LOG:-/var/log/hostupdater.log}"
+STATE_FILE="${HOSTUPDATER_STATE:-$TEMP_DIR/state.json}"
+PID_FILE="${HOSTUPDATER_PID:-/var/run/hostupdater.pid}"
+LOCK_DIR="${HOSTUPDATER_LOCK:-/var/lock/hostupdater.lock}"
+RESULTS_FILE="$TEMP_DIR/results.tsv"
+DNSMASQ_SECTION="dhcp.@dnsmasq[0]"
 
-# 日志函数
+CHANGED=0
+TOTAL_LINES=0
+ADDN_CHANGED=0
+PARSED_LINES=0
+IN_DAEMON=0
+
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+	echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
 }
 
-# 错误处理
-error_exit() {
-    log "错误: $1"
-    exit 1
+trim() {
+	printf '%s' "$1" | sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
-# 创建必要的目录
+json_escape() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+valid_name() {
+	case "$1" in
+		''|*[!A-Za-z0-9_.-]*) return 1 ;;
+	esac
+	[ "${#1}" -le 64 ]
+}
+
+get_opt() {
+	local v
+	v=$(uci -q get "hostupdater.main.$1" 2>/dev/null)
+	[ -n "$v" ] || v="$2"
+	printf '%s' "$v"
+}
+
+get_interval() {
+	local v
+	v=$(get_opt interval 6)
+	case "$v" in
+		''|*[!0-9]*) v=6 ;;
+	esac
+	[ "$v" -ge 1 ] 2>/dev/null || v=6
+	[ "$v" -le 168 ] 2>/dev/null || v=168
+	printf '%s' "$v"
+}
+
+get_target() {
+	local t
+	if [ -n "$HOSTUPDATER_TARGET" ]; then
+		t="$HOSTUPDATER_TARGET"
+		case "$t" in
+			/*) ;;
+			*) t="$DEFAULT_TARGET" ;;
+		esac
+	else
+		t=$(uci -q get hostupdater.main.target 2>/dev/null)
+		[ -n "$t" ] || t="$DEFAULT_TARGET"
+		# Only allow generated files below /etc/hostupdater/.
+		case "$t" in
+			/etc/hostupdater/?*) ;;
+			*) t="$DEFAULT_TARGET" ;;
+		esac
+	fi
+	case "$t" in
+		/etc/hosts|'/'|*/) t="$DEFAULT_TARGET" ;;
+		*..*) t="$DEFAULT_TARGET" ;;
+		*[!A-Za-z0-9._/-]*) t="$DEFAULT_TARGET" ;;
+	esac
+	printf '%s' "$t"
+}
+
 create_dirs() {
-    mkdir -p "$BACKUP_DIR" "$TEMP_DIR"
+	mkdir -p "$BACKUP_DIR" "$CACHE_DIR" "$TEMP_DIR"
+	mkdir -p "$(dirname "$(get_target)")"
 }
 
-# 备份当前hosts文件
-backup_hosts() {
-    if [ ! -f "$BACKUP_DIR/hosts.original" ]; then
-        cp "$HOSTS_FILE" "$BACKUP_DIR/hosts.original"
-        log "已备份原始hosts文件"
-    fi
-    cp "$HOSTS_FILE" "$BACKUP_DIR/hosts.$(date +%Y%m%d_%H%M%S)"
-    log "已备份当前hosts文件"
+rotate_log() {
+	local max
+	max=$(get_opt log_max_kb 512)
+	case "$max" in ''|*[!0-9]*) max=512 ;; esac
+	if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE" | tr -d ' ')" -gt $((max * 1024)) ]; then
+		mv -f "$LOG_FILE" "$LOG_FILE.1"
+	fi
 }
 
-# 下载hosts文件
-download_hosts() {
-    local url="$1"
-    local name="$2"
-    local temp_file="$TEMP_DIR/${name}.tmp"
-    
-    log "正在下载: $name ($url)"
-    
-    if curl -s -L -o "$temp_file" "$url" --connect-timeout 30 --max-time 300; then
-        # 统一换行符，去除CRLF
-        sed -i 's/\r$//' "$temp_file" 2>/dev/null
-        if [ -s "$temp_file" ]; then
-            log "下载成功: $name ($(wc -l < "$temp_file" | tr -d ' ' ) 行)"
-            return 0
-        else
-            log "下载失败: $name (文件为空)"
-            return 1
-        fi
-    else
-        log "下载失败: $name (网络错误)"
-        return 1
-    fi
+acquire_lock() {
+	local pid
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		echo $$ > "$LOCK_DIR/pid"
+		[ "$IN_DAEMON" = "1" ] || trap 'release_lock' EXIT
+		[ "$IN_DAEMON" = "1" ] || trap 'release_lock; exit 130' INT TERM
+		return 0
+	fi
+	pid=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		return 1
+	fi
+	rm -rf "$LOCK_DIR"
+	mkdir "$LOCK_DIR" 2>/dev/null || return 1
+	echo $$ > "$LOCK_DIR/pid"
+	[ "$IN_DAEMON" = "1" ] || trap 'release_lock' EXIT
+	[ "$IN_DAEMON" = "1" ] || trap 'release_lock; exit 130' INT TERM
+	return 0
 }
 
-# 解析hosts文件内容（支持IPv4与IPv6）
-# 解析到临时文件后打印出来
-parse_hosts() {
-    local file="$1"
-    local name="$2"
-    local out="$TEMP_DIR/${name}.parsed"
-    local count=0
-    : > "$out"
-    log "正在解析: $name"
-    
-    while IFS= read -r line; do
-        case "$line" in
-            \#*|"") continue ;;
-        esac
-        # 支持IPv4或IPv6记录（至少一个主机名）
-        echo "$line" | grep -qE '^((([0-9]{1,3}\.){3}[0-9]{1,3})|([0-9A-Fa-f:]+))[[:space:]]+[^[:space:]]+' || continue
-        printf "%s\n" "$line" >> "$out"
-        count=$((count+1))
-    done < "$file"
-    
-    log "解析完成: $name (有效行 $count)"
-    cat "$out"
+clear_traps() {
+	[ "$IN_DAEMON" = "1" ] || trap - EXIT INT TERM
 }
 
-# 对合并结果进行去重：按出现顺序保留第一个域名映射，后续重复域名跳过；原hosts优先（因为最先写入）
-dedupe_merged() {
-    local in_file="$1"
-    local out_file="$2"
-    awk '
-    BEGIN{ OFS="\t" }
-    /^#/ { print; next }
-    /^\s*$/ { print; next }
-    {
-        # 分割为IP + 主机名列表
-        ip=$1; n=split($0, f, /[\t ]+/); if (n<2){ next }
-        kept=""; cnt=0;
-        for(i=2;i<=n;i++){
-            h=f[i]; if(h=="") continue;
-            if(!(h in seen)){
-                seen[h]=1; cnt++; if(kept=="") kept=h; else kept=kept"\t"h;
-            }
-        }
-        if(cnt>0){ print ip, kept }
-    }
-    ' "$in_file" > "$out_file"
+release_lock() {
+	if [ -d "$LOCK_DIR" ] && [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; then
+		rm -rf "$LOCK_DIR"
+	fi
 }
 
-# 合并所有hosts文件
-merge_hosts() {
-    local out="$TEMP_DIR/merged.out"
-    : > "$out"
-    printf "# Generated by Host Updater on %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" >> "$out"
-    printf "# Original hosts file backup: %s\n\n" "$BACKUP_DIR/hosts.original" >> "$out"
-    
-    # 添加原始hosts文件中的所有有效条目（保留IPv4/IPv6，包括ff02组播等）
-    if [ -f "$BACKUP_DIR/hosts.original" ]; then
-        printf "# BEGIN ORIGINAL HOSTS\n" >> "$out"
-        while IFS= read -r line; do
-            case "$line" in
-                \#*|"") continue ;;
-            esac
-            printf "%s\n" "$line" >> "$out"
-        done < "$BACKUP_DIR/hosts.original"
-        printf "# END ORIGINAL HOSTS\n\n" >> "$out"
-    fi
-    
-    # 添加下载的hosts条目，按源包裹BEGIN/END注释
-    local files_found=0
-    for file in "$TEMP_DIR"/*.tmp; do
-        [ -f "$file" ] || continue
-        files_found=$((files_found+1))
-        local name
-        name=$(basename "$file" .tmp)
-        local content
-        content=$(parse_hosts "$file" "$name")
-        if [ -n "$content" ]; then
-            printf "# BEGIN SOURCE: %s\n" "$name" >> "$out"
-            printf "%s\n" "$content" >> "$out"
-            printf "# END SOURCE: %s\n\n" "$name" >> "$out"
-        else
-            log "源 $name 未解析出有效行，跳过写入"
-        fi
-    done
-    log "待合并源文件: $files_found 个"
-    
-    # 去重：保留最先出现（原hosts优先）
-    local deout="$TEMP_DIR/merged.dedup"
-    dedupe_merged "$out" "$deout"
-    cat "$deout"
+state_write() {
+	local tmp
+	mkdir -p "$TEMP_DIR"
+	tmp="$STATE_FILE.tmp.$$"
+	printf '{"running":%s,"phase":"%s","current":"%s","updated":%s}\n' \
+		"$1" "$2" "$(json_escape "$3")" "$(date +%s)" > "$tmp" && mv -f "$tmp" "$STATE_FILE"
 }
 
-# 更新hosts文件
-update_hosts() {
-    local new_content="$1"
-    printf "%s" "$new_content" > "$HOSTS_FILE"
-    if [ $? -eq 0 ]; then
-        log "hosts文件更新成功"
-        return 0
-    else
-        log "hosts文件更新失败"
-        return 1
-    fi
+state_final() {
+	local phase="$1" tmp first=1 name status lines
+	mkdir -p "$TEMP_DIR"
+	tmp="$STATE_FILE.tmp.$$"
+	{
+		printf '{"running":false,"phase":"%s","updated":%s,"target":"%s","changed":%s,"lines":%s,"sources":[' \
+			"$phase" "$(date +%s)" "$(json_escape "$(get_target)")" "${CHANGED:-0}" "${TOTAL_LINES:-0}"
+		if [ -f "$RESULTS_FILE" ]; then
+			while IFS='|' read -r name status lines; do
+				[ -z "$name" ] && continue
+				[ "$first" -eq 1 ] || printf ','
+				first=0
+				printf '{"name":"%s","status":"%s","lines":%s}' "$name" "$status" "${lines:-0}"
+			done < "$RESULTS_FILE"
+		fi
+		printf ']}\n'
+	} > "$tmp" && mv -f "$tmp" "$STATE_FILE"
 }
 
-# 清理临时文件
-cleanup() {
-    rm -rf "$TEMP_DIR"/* 2>/dev/null
-    log "已清理临时文件"
+# Remove the block written by older versions (which replaced /etc/hosts).
+restore_etc_hosts() {
+	local original="$BACKUP_DIR/hosts.original"
+	[ -f "$HOSTS_FILE" ] || return 1
+	grep -q 'Generated by Host Updater' "$HOSTS_FILE" 2>/dev/null || return 1
+
+	mkdir -p "$BACKUP_DIR"
+	cp -f "$HOSTS_FILE" "$BACKUP_DIR/hosts.pre-migrate" 2>/dev/null
+
+	if [ -f "$original" ]; then
+		cp -f "$original" "$HOSTS_FILE"
+		log "已从 $original 还原 /etc/hosts"
+	else
+		awk '/^# BEGIN ORIGINAL HOSTS$/ { f=1; next } /^# END ORIGINAL HOSTS$/ { f=0 } f' \
+			"$HOSTS_FILE" > "$HOSTS_FILE.migrate" 2>/dev/null
+		if grep -q '^#' "$HOSTS_FILE.migrate" 2>/dev/null || [ -s "$HOSTS_FILE.migrate" ]; then
+			mv -f "$HOSTS_FILE.migrate" "$HOSTS_FILE"
+			log "已从旧版生成内容中还原原始 /etc/hosts 条目"
+		else
+			rm -f "$HOSTS_FILE.migrate"
+			log "警告: 旧版 /etc/hosts 已生成但无法还原原始内容"
+			return 1
+		fi
+	fi
+	return 0
 }
 
-# 从配置文件读取源列表
+remove_legacy_cron() {
+	if crontab -l 2>/dev/null | grep -q '/usr/bin/hostupdater update'; then
+		crontab -l 2>/dev/null | grep -v '/usr/bin/hostupdater update' | crontab - 2>/dev/null
+		log "已移除旧版 crontab 定时任务"
+	fi
+}
+
+addnhosts_has_target() {
+	local out target
+	target=$(get_target)
+	out=$(uci -q show "$DNSMASQ_SECTION.addnhosts" 2>/dev/null) || return 1
+	case "$out" in
+		*"'$target'"*) return 0 ;;
+	esac
+	return 1
+}
+
+is_managed_path() {
+	case "$1" in
+		/etc/hostupdater/*) return 0 ;;
+	esac
+	return 1
+}
+
+list_addnhosts() {
+	uci -q show "$DNSMASQ_SECTION.addnhosts" 2>/dev/null | sed -e 's/^[^=]*=//' | tr ' ' '\n' | tr -d "'\""
+}
+
+# Adds the target to dnsmasq addnhosts and drops stale entries pointing to an
+# older generated file. Returns 0 when the config changed.
+ensure_addnhosts() {
+	local target out p has=0 stale=0
+	[ "$(get_opt manage_addnhosts 1)" = "1" ] || return 1
+	target=$(get_target)
+
+	uci -q get "$DNSMASQ_SECTION" >/dev/null 2>&1 || {
+		log "未找到 $DNSMASQ_SECTION，跳过 addnhosts 登记"
+		return 1
+	}
+
+	out=$(list_addnhosts)
+	for p in $out; do
+		if [ "$p" = "$target" ]; then
+			has=1
+		elif is_managed_path "$p"; then
+			stale=1
+		fi
+	done
+	[ "$has" = "1" ] && [ "$stale" = "0" ] && return 1
+
+	uci -q delete "$DNSMASQ_SECTION.addnhosts"
+	for p in $out; do
+		[ -z "$p" ] && continue
+		[ "$p" = "$target" ] && continue
+		is_managed_path "$p" && continue
+		uci add_list "$DNSMASQ_SECTION.addnhosts=$p"
+	done
+	uci add_list "$DNSMASQ_SECTION.addnhosts=$target" || return 1
+	uci commit dhcp || return 1
+	ADDN_CHANGED=1
+	log "已将 $target 加入 dnsmasq 额外 hosts 文件"
+	return 0
+}
+
+remove_addnhosts() {
+	local out paths p found=0
+	out=$(uci -q show "$DNSMASQ_SECTION.addnhosts" 2>/dev/null) || return 0
+	paths=$(list_addnhosts)
+	for p in $paths; do
+		is_managed_path "$p" && found=1
+	done
+	[ "$found" = "1" ] || return 0
+
+	uci -q delete "$DNSMASQ_SECTION.addnhosts"
+	for p in $paths; do
+		[ -z "$p" ] && continue
+		is_managed_path "$p" && continue
+		uci add_list "$DNSMASQ_SECTION.addnhosts=$p"
+	done
+	uci commit dhcp
+	log "已从 dnsmasq addnhosts 移除 Host Updater 生成文件"
+}
+
+reload_dns() {
+	[ "${HOSTUPDATER_NO_DNS:-0}" = "1" ] && return 0
+	if pidof dnsmasq >/dev/null 2>&1; then
+		if ! /etc/init.d/dnsmasq reload >/dev/null 2>&1; then
+			killall -HUP dnsmasq 2>/dev/null
+		fi
+		log "已通知 dnsmasq 重新加载 hosts 文件"
+	fi
+}
+
+# Print enabled sources in configuration order: name|url|enabled
 get_sources() {
-    if [ -f "$SOURCES_FILE" ]; then
-        cat "$SOURCES_FILE" | grep -v '^#' | grep -v '^$' | while IFS='|' read -r name url enabled; do
-            if [ "$enabled" = "1" ]; then
-                echo "$name|$url"
-            fi
-        done
-    fi
+	get_sources_filter 1
 }
 
-# 获取某个源的URL
-get_source_url_by_name() {
-    local target="$1"
-    if [ -f "$SOURCES_FILE" ]; then
-        while IFS='|' read -r name url enabled; do
-            [ -z "$name" ] && continue
-            echo "$name" | grep -q '^#' && continue
-            if [ "$name" = "$target" ]; then
-                echo "$url|$enabled"
-                return 0
-            fi
-        done < "$SOURCES_FILE"
-    fi
-    return 1
+get_all_sources() {
+	get_sources_filter 0
 }
 
-# 主更新函数
+get_sources_filter() {
+	local only_enabled="$1" name url enabled
+	[ -f "$SOURCES_FILE" ] || return 0
+	while IFS='|' read -r name url enabled || [ -n "$name" ]; do
+		name=$(trim "$name")
+		url=$(trim "$url")
+		enabled=$(trim "$enabled")
+		case "$name" in
+			''|'#'*) continue ;;
+		esac
+		if ! valid_name "$name"; then
+			log "忽略非法源名称: $name"
+			continue
+		fi
+		if [ "$only_enabled" = "1" ] && [ "$enabled" != "1" ]; then
+			continue
+		fi
+		printf '%s|%s|%s\n' "$name" "$url" "$enabled"
+	done < "$SOURCES_FILE"
+}
+
+get_source_by_name() {
+	local target="$1" name url enabled
+	get_all_sources > "$TEMP_DIR/sources.list"
+	while IFS='|' read -r name url enabled; do
+		if [ "$name" = "$target" ]; then
+			printf '%s|%s|%s\n' "$name" "$url" "$enabled"
+			return 0
+		fi
+	done < "$TEMP_DIR/sources.list"
+	return 1
+}
+
+download_hosts() {
+	local name="$1" url="$2" out="$3" err
+	log "正在下载: $name ($url)"
+	if ! curl -fsSL --connect-timeout 15 --max-time 180 --retry 2 --retry-delay 2 \
+		--retry-connrefused --max-filesize 8388608 -o "$out" "$url" 2>"$TEMP_DIR/curl.err"; then
+		err=$(tr '\n' ' ' < "$TEMP_DIR/curl.err" 2>/dev/null | cut -c1-200)
+		log "下载失败: $name (${err:-网络错误})"
+		return 1
+	fi
+	if [ ! -s "$out" ]; then
+		log "下载失败: $name (文件为空)"
+		return 1
+	fi
+	if head -c 4096 "$out" 2>/dev/null | grep -qiE '<!doctype|<html|<head'; then
+		log "下载失败: $name (返回内容是网页而不是 hosts)"
+		return 1
+	fi
+	return 0
+}
+
+parse_hosts() {
+	awk '
+	function valid_ip(s, a, n, i) {
+		if (s ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+			n = split(s, a, ".")
+			if (n != 4) return 0
+			for (i = 1; i <= 4; i++)
+				if (a[i] + 0 > 255) return 0
+			return 1
+		}
+		if (s ~ /^[0-9A-Fa-f:]+$/ && index(s, ":")) {
+			if (gsub(/:/, "&", s) > 7) return 0
+			if (s ~ /^:::|::.*::/) return 0
+			return 1
+		}
+		return 0
+	}
+	{
+		sub(/\r$/, "")
+		sub(/#.*/, "")
+		gsub(/^[ \t]+/, "")
+		gsub(/[ \t]+$/, "")
+		if ($0 == "" || NF < 2) next
+		if (!valid_ip($1)) next
+		hosts = ""
+		for (i = 2; i <= NF; i++) {
+			h = $i
+			if (h !~ /^[A-Za-z0-9_]([A-Za-z0-9._-]*[A-Za-z0-9_])?$/) continue
+			hosts = (hosts == "") ? h : hosts "\t" h
+		}
+		if (hosts != "") print $1 "\t" hosts
+	}' "$1" > "$2" 2>/dev/null
+}
+
+download_and_parse() {
+	local name="$1" url="$2"
+	local raw="$TEMP_DIR/$name.raw" parsed="$TEMP_DIR/$name.parsed"
+	download_hosts "$name" "$url" "$raw" || return 1
+	parse_hosts "$raw" "$parsed"
+	PARSED_LINES=$(wc -l < "$parsed" | tr -d ' ')
+	if [ "${PARSED_LINES:-0}" -le 0 ]; then
+		log "解析失败: $name (没有有效条目)"
+		return 1
+	fi
+	mkdir -p "$CACHE_DIR"
+	if ! mv -f "$parsed" "$CACHE_DIR/$name.hosts"; then
+		log "解析失败: $name (无法写入缓存)"
+		return 1
+	fi
+	log "解析完成: $name (有效行 $PARSED_LINES)"
+	return 0
+}
+
+# Rebuild the generated hosts file from caches, preserving configured order.
+build_target() {
+	local target new keep
+	target=$(get_target)
+	new="$TEMP_DIR/hosts.new"
+	create_dirs
+
+	{
+		echo "# Generated by Host Updater - do not edit manually"
+		echo "# Sources: $SOURCES_FILE"
+		get_sources | while IFS='|' read -r name url enabled; do
+			[ -f "$CACHE_DIR/$name.hosts" ] || continue
+			echo "# BEGIN SOURCE: $name"
+			cat "$CACHE_DIR/$name.hosts"
+			echo "# END SOURCE: $name"
+			echo
+		done
+	} > "$TEMP_DIR/hosts.raw"
+
+	awk '
+	/^#/ { print; next }
+	/^[ \t]*$/ { next }
+	{
+		ip = $1
+		keep = ""
+		for (i = 2; i <= NF; i++) {
+			key = tolower($i)
+			if (key in seen) continue
+			seen[key] = 1
+			keep = (keep == "") ? $i : keep "\t" $i
+		}
+		if (keep != "") print ip "\t" keep
+	}' "$TEMP_DIR/hosts.raw" > "$new"
+
+	if ! grep -q '^# BEGIN SOURCE:' "$new"; then
+		log "没有可用的源缓存，保持现有文件不变"
+		return 1
+	fi
+
+	if [ -f "$target" ] && cmp -s "$new" "$target"; then
+		CHANGED=0
+	else
+		keep=$(get_opt keep_backups 1)
+		case "$keep" in ''|*[!0-9]*) keep=1 ;; esac
+		if [ "$keep" -gt 0 ] && [ -f "$target" ]; then
+			cp -f "$target" "$BACKUP_DIR/hosts.prev" 2>/dev/null
+		fi
+		cp -f "$new" "$target.tmp.$$" || return 1
+		mv -f "$target.tmp.$$" "$target" || return 1
+		CHANGED=1
+	fi
+
+	TOTAL_LINES=$(grep -v '^[[:space:]]*\(#\|$\)' "$target" 2>/dev/null | wc -l)
+	TOTAL_LINES=$(printf '%s' "$TOTAL_LINES" | tr -d ' ')
+	return 0
+}
+
 do_update() {
-    log "开始更新hosts文件..."
-    
-    create_dirs
-    backup_hosts
-    cleanup
-    
-    local download_success=false
-    local sources
-    sources=$(get_sources)
-    
-    if [ -z "$sources" ]; then
-        log "没有找到启用的hosts源"
-        return 1
-    fi
-    
-    # 避免管道子shell造成变量不可见，使用 here-string 在当前shell中读取
-    while IFS='|' read -r name url; do
-        [ -z "$name" ] && continue
-        if download_hosts "$url" "$name"; then
-            download_success=true
-        fi
-    done <<EOF
+	acquire_lock || {
+		log "已有更新任务正在运行，跳过本次更新"
+		echo "already running"
+		return 2
+	}
+	rotate_log
+	create_dirs
+	: > "$RESULTS_FILE"
+	state_write true "starting" ""
+	log "===== 开始更新 ====="
+
+	local sources
+	sources=$(get_sources)
+	if [ -z "$sources" ]; then
+		CHANGED=0
+		TOTAL_LINES=0
+		state_final "no-sources"
+		log "没有启用的 hosts 源"
+		release_lock
+		clear_traps
+		return 1
+	fi
+
+	local name url enabled lines
+	while IFS='|' read -r name url enabled; do
+		[ -z "$name" ] && continue
+		state_write true "downloading" "$name"
+		if download_and_parse "$name" "$url"; then
+			lines=$(wc -l < "$CACHE_DIR/$name.hosts" | tr -d ' ')
+			printf '%s|ok|%s\n' "$name" "$lines" >> "$RESULTS_FILE"
+		elif [ -f "$CACHE_DIR/$name.hosts" ]; then
+			lines=$(wc -l < "$CACHE_DIR/$name.hosts" | tr -d ' ')
+			printf '%s|stale|%s\n' "$name" "$lines" >> "$RESULTS_FILE"
+			log "源 $name 本次失败，沿用上次成功缓存 ($lines 行)"
+		else
+			printf '%s|fail|0\n' "$name" >> "$RESULTS_FILE"
+			log "源 $name 本次失败且没有可用缓存"
+		fi
+	done <<EOF
 $sources
 EOF
-    
-    if [ "$download_success" = true ]; then
-        local merged_content
-        merged_content=$(merge_hosts)
-        if [ -n "$merged_content" ]; then
-            if update_hosts "$merged_content"; then
-                log "hosts更新完成"
-                cleanup
-                return 0
-            else
-                log "hosts更新失败"
-                cleanup
-                return 1
-            fi
-        else
-            log "合并结果为空，保持原状"
-            return 1
-        fi
-    else
-        log "所有下载都失败了"
-        cleanup
-        return 1
-    fi
+
+	state_write true "merging" ""
+	if build_target; then
+		state_write true "writing" ""
+		if [ "$CHANGED" = "1" ]; then
+			ensure_addnhosts >/dev/null 2>&1
+			reload_dns
+			log "已写入 $TOTAL_LINES 行到 $(get_target)"
+		else
+			if ensure_addnhosts; then
+				reload_dns
+			fi
+			log "内容无变化，跳过写入"
+		fi
+		state_final "done"
+		log "===== 更新完成 ====="
+		release_lock
+		clear_traps
+		return 0
+	fi
+
+	state_final "error"
+	log "===== 更新失败 ====="
+	release_lock
+	clear_traps
+	return 1
 }
 
-# 显示状态
-show_status() {
-    echo "Host Updater 状态:"
-    echo "配置文件: $CONFIG_FILE"
-    echo "源文件: $SOURCES_FILE"
-    echo "hosts文件: $HOSTS_FILE"
-    echo "备份目录: $BACKUP_DIR"
-    echo "日志文件: $LOG_FILE"
-    echo ""
-    
-    if [ -f "$SOURCES_FILE" ]; then
-        echo "已配置的源:"
-        cat "$SOURCES_FILE" | grep -v '^#' | grep -v '^$' | while IFS='|' read -r name url enabled; do
-            local status="禁用"
-            if [ "$enabled" = "1" ]; then
-                status="启用"
-            fi
-            echo "  $name: $status"
-        done
-    else
-        echo "未找到源配置文件"
-    fi
+do_update_source() {
+	local name="$1" info url enabled lines
+	if ! valid_name "$name"; then
+		echo "错误: 非法源名称"
+		return 1
+	fi
+	acquire_lock || {
+		echo "已有更新任务正在运行"
+		return 2
+	}
+	create_dirs
+	: > "$RESULTS_FILE"
+
+	info=$(get_source_by_name "$name") || {
+		echo "错误: 未找到订阅源 $name"
+		release_lock
+		clear_traps
+		return 1
+	}
+	name=${info%%|*}
+	url=${info#*|}
+	url=${url%%|*}
+	enabled=${info##*|}
+
+	if [ "$enabled" != "1" ]; then
+		log "警告: 源 $name 未启用，仍执行手动抓取"
+	fi
+
+	state_write true "downloading" "$name"
+	if download_and_parse "$name" "$url"; then
+		lines=$(wc -l < "$CACHE_DIR/$name.hosts" | tr -d ' ')
+		printf '%s|ok|%s\n' "$name" "$lines" >> "$RESULTS_FILE"
+	else
+		if [ -f "$CACHE_DIR/$name.hosts" ]; then
+			lines=$(wc -l < "$CACHE_DIR/$name.hosts" | tr -d ' ')
+			printf '%s|stale|%s\n' "$name" "$lines" >> "$RESULTS_FILE"
+		else
+			printf '%s|fail|0\n' "$name" >> "$RESULTS_FILE"
+		fi
+		state_final "error"
+		log "单源更新失败: $name"
+		echo "单源更新失败: $name"
+		release_lock
+		clear_traps
+		return 1
+	fi
+
+	state_write true "merging" ""
+	if build_target; then
+		if [ "$CHANGED" = "1" ]; then
+			ensure_addnhosts >/dev/null 2>&1
+			reload_dns
+		else
+			if ensure_addnhosts; then
+				reload_dns
+			fi
+		fi
+		state_final "done"
+		log "单源更新完成: $name"
+		echo "单源更新完成: $name"
+		release_lock
+		clear_traps
+		return 0
+	fi
+
+	state_final "error"
+	release_lock
+	clear_traps
+	return 1
 }
 
-# 显示帮助信息
-show_help() {
-    echo "Host Updater - 管理多个hosts订阅源"
-    echo ""
-    echo "用法: $0 [命令] [可选参数]"
-    echo ""
-    echo "命令:"
-    echo "  update                  执行全部更新"
-    echo "  update-source <name>    只更新指定订阅源"
-    echo "  status                  显示状态"
-    echo "  backup                  创建备份"
-    echo "  restore                 还原到原始状态"
-    echo "  help                    显示此帮助信息"
-    echo ""
-    echo "示例:"
-    echo "  $0 update                # 更新全部"
-    echo "  $0 update-source adguard # 只更新adguard源"
+do_migrate() {
+	local target changed=0
+	create_dirs
+	rotate_log
+	remove_legacy_cron
+
+	if restore_etc_hosts; then
+		changed=1
+	fi
+
+	target=$(get_target)
+	if [ ! -f "$target" ]; then
+		printf '# Generated by Host Updater - do not edit manually\n' > "$target"
+		changed=1
+	fi
+
+	ADDN_CHANGED=0
+	if ensure_addnhosts; then
+		changed=1
+	fi
+
+	[ "$changed" = "1" ] && reload_dns
+	log "初始化/迁移检查完成"
+	return 0
 }
 
-# 还原到原始状态
 do_restore() {
-    if [ -f "$BACKUP_DIR/hosts.original" ]; then
-        cp "$BACKUP_DIR/hosts.original" "$HOSTS_FILE"
-        log "已还原到原始hosts文件"
-        echo "已还原到原始hosts文件"
-    else
-        log "未找到原始hosts备份文件"
-        echo "错误: 未找到原始hosts备份文件"
-        return 1
-    fi
+	if ! acquire_lock; then
+		echo "已有更新任务正在运行"
+		return 2
+	fi
+	local target
+	target=$(get_target)
+
+	if command -v uci >/dev/null 2>&1; then
+		uci -q set hostupdater.main.enabled=0
+		uci -q commit hostupdater
+	fi
+	if [ -x /etc/init.d/hostupdater ]; then
+		/etc/init.d/hostupdater stop >/dev/null 2>&1
+		/etc/init.d/hostupdater disable >/dev/null 2>&1
+	fi
+
+	remove_addnhosts
+	reload_dns
+	rm -f "$target" "$target.tmp."* 2>/dev/null
+	rm -f "$CACHE_DIR"/*.hosts 2>/dev/null
+	rm -f "$BACKUP_DIR/hosts.prev" 2>/dev/null
+	CHANGED=0
+	TOTAL_LINES=0
+	: > "$RESULTS_FILE"
+	state_final "restored"
+	log "已停止使用订阅源并清理生成文件（/etc/hosts 未改动）"
+	echo "已停止使用订阅源并清理生成文件"
+	release_lock
+	clear_traps
+	return 0
 }
 
-# 主程序
-case "$1" in
-    update)
-        do_update
-        ;;
-    update-source)
-        if [ -z "$2" ]; then
-            echo "错误: 请输入订阅源名称"
-            exit 1
-        fi
-        name="$2"
-        info=$(get_source_url_by_name "$name") || { echo "错误: 未找到该订阅源"; exit 1; }
-        url="${info%%|*}"
-        enabled="${info##*|}"
-        if [ "$enabled" != "1" ]; then
-            echo "警告: 该订阅源未启用，仍尝试抓取"
-        fi
-        create_dirs
-        backup_hosts
-        cleanup
-        if download_hosts "$url" "$name"; then
-            merged=$(merge_hosts)
-            update_hosts "$merged"
-            cleanup
-            echo "已完成单源更新: $name"
-            exit 0
-        else
-            cleanup
-            echo "单源更新失败: $name"
-            exit 1
-        fi
-        ;;
-    status)
-        show_status
-        ;;
-    backup)
-        create_dirs
-        backup_hosts
-        ;;
-    restore)
-        do_restore
-        ;;
-    help|--help|-h)
-        show_help
-        ;;
-    *)
-        show_help
-        exit 1
-        ;;
-esac 
+do_backup() {
+	create_dirs
+	local target
+	target=$(get_target)
+	if [ -f "$target" ]; then
+		cp -f "$target" "$BACKUP_DIR/hosts.prev"
+		echo "已备份到 $BACKUP_DIR/hosts.prev"
+	else
+		echo "错误: 生成文件不存在"
+		return 1
+	fi
+}
+
+do_status_json() {
+	local target enabled interval service=0 running=0 target_exists=0 addn=0 last=0 pid tlines=0 first=1
+	target=$(get_target)
+	enabled=$(get_opt enabled 0)
+	interval=$(get_interval)
+	[ "$enabled" = "1" ] || enabled=0
+
+	if [ -f "$PID_FILE" ]; then
+		pid=$(cat "$PID_FILE" 2>/dev/null)
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			service=1
+		fi
+	fi
+	if [ -d "$LOCK_DIR" ]; then
+		pid=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			running=1
+		fi
+	fi
+	[ -f "$target" ] && target_exists=1
+	if [ "$target_exists" = "1" ]; then
+		last=$(stat -c %Y "$target" 2>/dev/null || echo 0)
+		tlines=$(grep -v '^[[:space:]]*\(#\|$\)' "$target" 2>/dev/null | wc -l)
+		tlines=$(printf '%s' "$tlines" | tr -d ' ')
+	fi
+	addnhosts_has_target && addn=1
+
+	mkdir -p "$TEMP_DIR"
+	: > "$TEMP_DIR/status.sources"
+	get_all_sources > "$TEMP_DIR/status.list"
+	local name url en cached cached_at lines
+	while IFS='|' read -r name url en; do
+		[ -z "$name" ] && continue
+		cached=0
+		cached_at=0
+		lines=0
+		if [ -f "$CACHE_DIR/$name.hosts" ]; then
+			cached=1
+			cached_at=$(stat -c %Y "$CACHE_DIR/$name.hosts" 2>/dev/null || echo 0)
+			lines=$(wc -l < "$CACHE_DIR/$name.hosts" | tr -d ' ')
+		fi
+		[ "$first" -eq 1 ] || printf ',' >> "$TEMP_DIR/status.sources"
+		first=0
+		printf '{"name":"%s","enabled":%s,"cached":%s,"cached_at":%s,"lines":%s}' \
+			"$name" "$([ "$en" = "1" ] && echo 1 || echo 0)" "$cached" "$cached_at" "$lines" \
+			>> "$TEMP_DIR/status.sources"
+	done < "$TEMP_DIR/status.list"
+
+	printf '{"enabled":%s,"interval":%s,"target":"%s","target_exists":%s,"addnhosts":%s,"service":%s,"running":%s,"last_update":%s,"lines":%s,"sources":[' \
+		"$enabled" "$interval" "$(json_escape "$target")" "$target_exists" "$addn" "$service" "$running" "$last" "$tlines"
+	cat "$TEMP_DIR/status.sources"
+	printf ']}\n'
+}
+
+do_status() {
+	local target
+	target=$(get_target)
+	echo "Host Updater 状态:"
+	echo "  配置文件: $CONFIG_FILE"
+	echo "  源文件:   $SOURCES_FILE"
+	echo "  生成文件: $target"
+	echo "  缓存目录: $CACHE_DIR"
+	echo "  日志文件: $LOG_FILE"
+	echo ""
+	echo "已配置的源（按优先级）:"
+	get_all_sources > "$TEMP_DIR/status.list"
+	if [ -s "$TEMP_DIR/status.list" ]; then
+		local name url en cache
+		while IFS='|' read -r name url en; do
+			[ -z "$name" ] && continue
+			cache="无缓存"
+			if [ -f "$CACHE_DIR/$name.hosts" ]; then
+				cache="缓存 $(wc -l < "$CACHE_DIR/$name.hosts" | tr -d ' ') 行"
+			fi
+			printf '  %-16s %s  %s\n' "$name" "$([ "$en" = "1" ] && echo 启用 || echo 禁用)" "$cache"
+		done < "$TEMP_DIR/status.list"
+	else
+		echo "  (无)"
+	fi
+}
+
+wait_for_network() {
+	local timeout="${1:-120}" waited=0
+	while [ "$waited" -lt "$timeout" ]; do
+		if ubus -S call network.interface.wan status 2>/dev/null | grep -q '"up": *true'; then
+			sleep 2
+			return 0
+		fi
+		if ! command -v ubus >/dev/null 2>&1; then
+			ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 && return 0
+		fi
+		sleep 2
+		waited=$((waited + 2))
+	done
+	return 1
+}
+
+do_daemon() {
+	IN_DAEMON=1
+	mkdir -p "$(dirname "$PID_FILE")"
+	echo $$ > "$PID_FILE"
+	trap 'daemon_cleanup' EXIT
+	trap 'exit 0' INT TERM
+	log "守护进程启动 (pid $$)"
+	do_migrate
+	if wait_for_network 120; then
+		do_update
+	else
+		log "等待网络就绪超时，仍尝试更新"
+		do_update
+	fi
+	local interval
+	while :; do
+		interval=$(get_interval)
+		sleep $((interval * 3600))
+		do_update
+	done
+}
+
+daemon_cleanup() {
+	release_lock
+	rm -f "$PID_FILE"
+}
+
+show_help() {
+	echo "Host Updater - 管理多个 hosts 订阅源"
+	echo ""
+	echo "用法: $0 <命令> [参数]"
+	echo ""
+	echo "命令:"
+	echo "  update                  立即更新全部启用的源"
+	echo "  update-source <name>    只刷新指定源（保留其它源）"
+	echo "  status [--json]         显示状态（--json 供 LuCI 使用）"
+	echo "  daemon                  前台运行定时更新循环（procd 使用）"
+	echo "  migrate                 初始化并迁移旧版 /etc/hosts 写入方式"
+	echo "  restore                 停止使用订阅源并清理生成文件"
+	echo "  backup                  备份当前生成文件"
+	echo "  help                    显示帮助"
+}
+
+if [ "${HOSTUPDATER_LIB:-0}" != "1" ]; then
+	case "$1" in
+		update) do_update ;;
+		update-source) do_update_source "$2" ;;
+		status)
+			if [ "$2" = "--json" ]; then
+				do_status_json
+			else
+				do_status
+			fi
+			;;
+		daemon) do_daemon ;;
+		migrate) do_migrate ;;
+		restore) do_restore ;;
+		backup) do_backup ;;
+		help|--help|-h|'') show_help ;;
+		*)
+			show_help
+			exit 1
+			;;
+	esac
+fi

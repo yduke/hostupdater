@@ -2,6 +2,9 @@
   "admin/services/hostupdater": {
     "title": "Host Updater",
     "order": 10,
+    "depends": {
+      "acl": [ "luci-app-hostupdater" ]
+    },
     "action": {
       "type": "view",
       "path": "admin/services/hostupdater"

@@ -1,184 +1,262 @@
-# Host Updater - OpenWrt软件包
+# Host Updater - OpenWrt hosts 订阅源管理器
 
-一个用于OpenWrt的hosts订阅源管理软件包，支持多个hosts源的定时抓取和手动更新。
+Host Updater 用于管理多个 hosts 订阅源，定时或手动下载、解析并合并内容，然后以
+dnsmasq `addnhosts` 文件的形式发布。它不会修改 `/etc/hosts`，因此系统自带解析记录
+始终优先，也不会在卸载或升级时破坏系统 hosts。
 
-## 图片预览
+## 功能
 
-<img width="1912" height="954" alt="wechat_2025-08-28_113832_241" src="https://github.com/user-attachments/assets/a48455a0-960a-461d-b4ce-a61b3fe0772d" />
+- 多订阅源管理，支持启用/禁用、单独更新和删除。
+- 源按配置文件中的顺序合并，同一个主机名只保留第一次出现的记录。
+- 每个源保留最近一次成功下载的缓存；下载失败时自动沿用缓存，避免解析记录突然消失。
+- 生成文件默认位于 `/etc/hostupdater/hosts`，并登记到 dnsmasq `addnhosts`。
+- 提供 LuCI 页面和命令行工具，支持状态、日志、生成文件查看和手动更新。
+- 支持 IPv4、IPv6、CRLF、行内注释和重复主机名。
+- 1.1.0-r3 及以后版本升级时保留源配置、缓存和生成文件；卸载时清理 addnhosts 登记和生成数据。
+- 目标路径有安全校验，必须位于 `/etc/hostupdater/` 下，拒绝 `/etc/hosts`、相对路径、`..` 和空白字符。
 
-## 功能特性
+## 安装
 
-- 🔄 **多源管理**: 支持配置多个hosts订阅源
-- ⏰ **定时更新**: 支持设置定时自动更新（1-24小时间隔）
-- 🖱️ **手动更新**: 支持通过Web界面或命令行手动更新
-- 💾 **自动备份**: 自动备份原始hosts文件，支持一键还原
-- 🌐 **Web界面**: 提供完整的Luci Web管理界面
-- 📝 **日志记录**: 详细的操作日志记录
-- 🧹 **干净卸载**: 卸载时自动还原系统到安装前的状态
-- 🧠 **去重合并**: 合并最终hosts时会自动去除重复的域名映射，按"先出现先保留"的策略处理，原始系统hosts优先级最高，其次是订阅源按顺序依次合并，避免冲突与污染。
+### 使用预编译 IPK
 
-## 安装方法
-
-### 方法1: 从源码编译
-
-1. 将本软件包放入OpenWrt SDK的`package/utils/`目录
-2. 在OpenWrt源码根目录执行：
-   ```bash
-   make menuconfig
-   ```
-3. 进入 `Utilities` → `hostupdater` 并选择为 `M` 或 `*`
-4. 编译：
-   ```bash
-   make package/hostupdater/compile V=s
-   ```
-
-### 方法2: 直接安装
-
-将编译好的`.ipk`文件上传到路由器，然后执行：
-```bash
-opkg install hostupdater_1.0.0-1_all.ipk
+```sh
+opkg update
+opkg install /tmp/hostupdater_1.1.0-r8_all.ipk
 ```
 
-## 配置说明
+依赖：`curl`、`ca-bundle`、`luci-base`、`luci-compat`。
 
-### 基本配置
+### 从 OpenWrt SDK 编译
 
-软件包安装后，配置文件位于：
-- UCI配置: `/etc/config/hostupdater`
-- 源配置: `/etc/hostupdater/sources.conf`
-
-### 添加hosts源
-
-编辑 `/etc/hostupdater/sources.conf` 文件，格式如下：
+```sh
+# 将本仓库放到 SDK 的 package/utils/hostupdater
+make menuconfig     # Utilities -> hostupdater
+make package/hostupdater/compile V=s
 ```
-# 格式: 名称|URL|启用状态(1=启用,0=禁用)
-gitcdn|https://hosts.gitcdn.top/hosts.txt|0
+
+### 本地快速构建 IPK
+
+不依赖 OpenWrt SDK，直接生成可安装的 IPK：
+
+```sh
+python tools/build-ipk.py
+ls output/
+```
+
+## 配置
+
+- UCI 配置：`/etc/config/hostupdater`
+- 订阅源：`/etc/hostupdater/sources.conf`
+- 生成文件：`/etc/hostupdater/hosts`（可在 UCI 中修改 `target`）
+- 缓存：`/etc/hostupdater/cache/<源名>.hosts`
+- 日志：`/var/log/hostupdater.log`
+
+### UCI 选项
+
+```sh
+uci set hostupdater.main.enabled='1'          # 是否启用
+uci set hostupdater.main.interval='24'        # 更新间隔（1-168 小时）
+uci set hostupdater.main.target='/etc/hostupdater/hosts'  # 必须在 /etc/hostupdater/ 下
+uci set hostupdater.main.manage_addnhosts='1' # 自动维护 dnsmasq addnhosts
+uci set hostupdater.main.keep_backups='1'     # 写入前保留上一版目标文件
+uci set hostupdater.main.log_max_kb='512'     # 日志轮转阈值
+uci commit hostupdater
+/etc/init.d/hostupdater restart
+```
+
+### 订阅源格式
+
+每行一个源：
+
+```
+名称|URL|启用状态
+```
+
+示例：
+
+```
+github|https://hosts.gitcdn.top/hosts.txt|1
 tmdb_ipv4|https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv4|0
-tmdb_ipv6|https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv6|0
 ```
 
-### 去重与优先级策略
-- 最终 `/etc/hosts` 会包含：
-  - 原始系统hosts（安装时备份的内容）
-  - 每个订阅源的BEGIN/END注释块
-- 去重策略：按行解析得到"IP + 主机名列表"，对主机名进行去重，保留首次出现的映射
-- 优先级：
-  1. 原始系统hosts（最高）
-  2. 第1个订阅源
-  3. 第2个订阅源 … 依次类推
-- 这样可以避免同一域名被后续源覆盖，保障系统自带记录与用户自定记录优先
+- 名称只能包含字母、数字、下划线、点和短横线，最长 64 个字符。
+- `1` 表示启用，`0` 表示禁用。
+- 从上到下即优先级；同一个主机名在多个源中出现时，先出现的生效。
+- 以 `#` 开头的行会被忽略。
+- 支持任意纯文本 hosts 内容，包括 IPv4、IPv6、CRLF 和行内注释。
 
-## 使用方法
+修改后执行：
 
-### Web界面
+```sh
+/usr/bin/hostupdater update
+```
 
-1. 登录Luci Web界面
-2. 进入 `服务` → `Host Updater`
-3. 配置基本设置和hosts源
-4. 点击 `执行更新` 进行手动更新
+## 使用
+
+### LuCI
+
+登录 LuCI，进入 **服务 -> Host Updater**。页面提供：
+
+- 服务开关、更新间隔、目标文件路径；
+- 源的添加、启用/禁用、单源更新、删除；
+- 全量更新、状态轮询、日志查看、生成文件查看；
+- 恢复默认（停止使用订阅源并清理生成文件）。
 
 ### 命令行
 
-```bash
-# 查看帮助
-hostupdater help
-
-# 执行更新
-hostupdater update
-
-# 查看状态
-hostupdater status
-
-# 创建备份
-hostupdater backup
-
-# 还原到原始状态
-hostupdater restore
+```sh
+hostupdater update                 # 更新全部启用的源
+hostupdater update-source github   # 只更新一个源
+hostupdater status                 # 人类可读状态
+hostupdater status --json          # JSON 状态（供 LuCI 使用）
+hostupdater backup                 # 备份当前生成文件
+hostupdater migrate                # 迁移/初始化，登记 addnhosts
+hostupdater restore                # 停用服务并清理生成文件
+hostupdater daemon                 # 前台运行调度循环
 ```
 
-### 服务管理
+服务管理：
 
-```bash
-# 启用服务
+```sh
 /etc/init.d/hostupdater enable
-
-# 启动服务
 /etc/init.d/hostupdater start
-
-# 停止服务
-/etc/init.d/hostupdater stop
-
-# 重启服务
 /etc/init.d/hostupdater restart
-
-# 查看服务状态
 /etc/init.d/hostupdater status
 ```
+
+## dnsmasq 集成
+
+软件包会把生成文件加入 `dhcp.@dnsmasq[0].addnhosts`，并通知 dnsmasq 重新加载。
+不会覆盖 `/etc/hosts`，也不会改动其他已有的 addnhosts 条目。
+
+查看登记：
+
+```sh
+uci show dhcp.@dnsmasq[0].addnhosts
+```
+
+如果关闭 `manage_addnhosts`，需要自行把生成文件加入 dnsmasq 配置。
 
 ## 文件结构
 
 ```
-/etc/config/hostupdater          # UCI配置文件
-/etc/hostupdater/                # 软件包数据目录
-├── sources.conf                 # hosts源配置文件
-└── backup/                      # 备份目录
-    └── hosts.original           # 原始hosts文件备份
-/usr/bin/hostupdater             # 主程序
-/etc/init.d/hostupdater          # 服务脚本
-/var/log/hostupdater.log         # 日志文件
+/etc/config/hostupdater              UCI 配置
+/etc/hostupdater/sources.conf       订阅源配置
+/etc/hostupdater/hosts              生成的 hosts 文件
+/etc/hostupdater/cache/             每个源最近一次成功缓存
+/etc/hostupdater/backup/hosts.prev  上一版生成文件
+/usr/bin/hostupdater                主程序
+/etc/init.d/hostupdater             procd 服务脚本
+/usr/lib/lua/luci/controller/hostupdater.lua
+/usr/lib/lua/luci/view/admin/services/hostupdater.htm
+/usr/lib/lua/luci/i18n/hostupdater.zh-cn.lmo
+/var/log/hostupdater.log            日志
 ```
 
-## 日志查看
+## 构建与测试
 
-```bash
-# 查看实时日志
-tail -f /var/log/hostupdater.log
+运行 shell 单元测试（Git Bash / Linux 均可）：
 
-# 查看最近100行日志
-tail -n 100 /var/log/hostupdater.log
+```sh
+bash tests/run-tests.sh
 ```
+
+当前覆盖解析、CRLF、重复优先级、缓存回退、单源更新、HTML 错误页拒绝、无源、
+目标路径安全和 addnhosts 清理，共 39 项。
+
+翻译维护：
+
+```sh
+python tools/update-po.py          # 从模板提取字符串，更新 POT/PO
+python tools/build-lmo.py          # 生成并校验 zh-cn LMO
+```
+
+使用 Docker/SDK 构建：
+
+```sh
+./build.sh          # 24.10 IPK
+./build.sh apk      # SNAPSHOT APK（自动解析当前 SDK）
+./test.sh           # 多版本 SDK 构建测试
+```
+
+### GitHub Actions 自动发布
+
+推送 `main`/`master` 分支或 `v*` 标签，或手动运行 `Release packages` workflow，会：
+
+1. 分别用 OpenWrt 24.10 SDK 和 SNAPSHOT SDK 编译 IPK、APK；
+2. 校验 tag（如果本次是 tag 推送）与 `Makefile` 中的 `PKG_VERSION`、`PKG_RELEASE` 一致；
+3. 创建或更新对应版本 Release，并上传两个安装包及 `sha256sums.txt`。
+
+SNAPSHOT SDK 默认从 `downloads.openwrt.org` 的 `x86/64` 目标自动解析；也可通过
+`SNAPSHOT_SDK_URL` 固定 SDK，或用 `SNAPSHOT_TARGET` 指定其他目标。
 
 ## 故障排除
 
-### 常见问题
+**更新后 DNS 没有变化**
 
-1. **更新后无订阅内容**
-   - 检查订阅URL是否可访问
-   - 查看`/tmp/hostupdater/*.tmp`是否有内容
-   - 查看日志“解析完成 (有效行 N)”是否>0
+```sh
+/usr/bin/hostupdater status --json
+uci show dhcp.@dnsmasq[0].addnhosts
+tail -n 50 /var/log/hostupdater.log
+/etc/init.d/dnsmasq reload
+```
 
-2. **重复或冲突的解析**
-   - 新版已启用“按出现顺序去重”，原始系统hosts优先
+确认 `target` 文件存在、`addnhosts` 已登记，并且源确实抓取到了有效记录。
 
-3. **Web界面无法访问**
-   - 确保已安装luci-base和luci-compat
-   - 重启rpcd与uhttpd
+**源下载失败**
+
+每个源保留最近一次成功缓存。即使网络暂时失败，生成文件也不会被清空。查看日志中的
+`stale` 或 `fail` 状态；如果从未成功过，该源不会产生记录。
+
+**LuCI 页面 403**
+
+确认已安装 `luci-compat`，并重新登录 LuCI（升级后 rpcd 会话会重建）。ACL 组名为
+`luci-app-hostupdater`。必要时重启：
+
+```sh
+/etc/init.d/rpcd restart
+/etc/init.d/uhttpd restart
+```
 
 ## 卸载
 
-卸载软件包时会自动：
-1. 停止并禁用服务
-2. 还原原始hosts文件
-3. 清理所有配置文件和数据
-
-```bash
+```sh
 opkg remove hostupdater
 ```
 
+卸载时会停止并禁用服务、移除指向 `/etc/hostupdater/` 的 addnhosts 条目，并删除
+`/etc/hostupdater` 与 UCI 配置。不会修改 `/etc/hosts`。
+
+## 升级说明
+
+从 1.0.x 升级时，旧版本使用 `/etc/hosts` 重写模式，且旧包的卸载脚本可能在升级过程中
+删除 `/etc/hostupdater`。升级前务必备份源配置：
+
+```sh
+cp /etc/hostupdater/sources.conf /tmp/sources.conf.bak
+cp /etc/hostupdater/hosts /tmp/hosts.bak 2>/dev/null || true
+```
+
+升级到 1.1.0 后执行一次 `hostupdater update` 重建生成文件。1.1.0-r3 及以后版本的
+升级会保留源配置、缓存和生成文件，不再需要手动恢复。
+
 ## 许可证
 
-本软件包采用MIT许可证。详见 [LICENSE](LICENSE) 文件。
-
-## 贡献
-
-欢迎提交Issue和Pull Request来改进这个软件包。
+MIT，详见 [LICENSE](LICENSE)。
 
 ## 更新日志
 
-### v1.0.0
-- 初始版本发布
-- 支持多hosts源管理
-- 提供Web界面和命令行工具
-- 支持定时和手动更新
-- 自动备份和还原功能
-- 去重合并最终hosts（原始hosts最高优先）
+### 1.1.0
+
+- 改为 dnsmasq `addnhosts` 发布，彻底停止修改 `/etc/hosts`。
+- 每个源独立缓存，下载失败时沿用最近成功内容。
+- 重写 LuCI 页面和控制器，支持状态轮询、源管理、日志和生成文件查看。
+- 新增 `luci-app-hostupdater` ACL、中文 LMO 和自定义图标。
+- 目标路径安全校验，仅允许 `/etc/hostupdater/` 下的文件。
+- 自动清理目标切换后遗留的 addnhosts 条目。
+- 升级保留源配置、缓存和生成文件；卸载时安全清理。
+- 新增 39 项 shell 单元测试、IPK 构建脚本和翻译工具。
+
+### 1.0.0
+
+- 初始版本：多源管理、定时/手动更新、Web 界面、备份还原。

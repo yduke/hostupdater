@@ -1,5 +1,5 @@
 {
-  "hostupdater": {
+  "luci-app-hostupdater": {
     "description": "Grant access to Host Updater",
     "read": {
       "ubus": {
@@ -8,20 +8,21 @@
       },
       "file": {
         "/etc/config/hostupdater": {},
-        "/etc/hostupdater/sources.conf": {},
+        "/etc/hostupdater/": {},
         "/etc/hosts": {},
+        "/tmp/hostupdater/": {},
         "/var/log/hostupdater.log": {}
       }
     },
     "write": {
       "ubus": {
         "service": ["reload"],
-        "uci": ["set", "add", "delete", "reorder", "rename"]
+        "uci": ["set", "add", "delete", "reorder", "rename", "commit"]
       },
       "file": {
         "/etc/config/hostupdater": {},
-        "/etc/hostupdater/sources.conf": {},
-        "/etc/hosts": {}
+        "/etc/hostupdater/": {},
+        "/var/log/hostupdater.log": {}
       },
       "exec": {
         "/usr/bin/hostupdater": {}
